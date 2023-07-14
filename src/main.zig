@@ -16,17 +16,6 @@ pub fn main() !void {
     try bw.flush(); // don't forget to flush!
 }
 
-// pub enum AbsAxis {
-//     X,
-//     Y,
-//     Z,
-// }
-// pub enum CharacteristicAxi {
-//     Major,
-//     Middle,
-//     Minor,
-// }
-
 pub const Poly = struct {
     a: u8,
     b: u8,
@@ -51,34 +40,78 @@ pub const Poly = struct {
     fn deinit(self: *Self) void {
         self.set.deinit();
     }
+
+    fn hash(self: Self) u64 {
+        var hasher = Wyhash.init(0);
+        hasher.update(std.mem.asBytes(&self.a));
+        hasher.update(std.mem.asBytes(&self.b));
+        hasher.update(std.mem.asBytes(&self.c));
+        hash_bitset_into(self.set.unmanaged, &hasher);
+        return hasher.final();
+    }
+
+    fn eql(self: Self, other: Self) bool {
+        if (self.a != other.a or self.b != other.b or self.c != other.c) {
+            return false;
+        }
+        return bitsets_eql(self.set, other.set);
+    }
+
+    fn clone(self: Self, alloc: std.mem.Allocator) !Self {
+        return Self{
+            .a = self.a,
+            .b = self.b,
+            .c = self.c,
+            .set = try self.set.clone(alloc),
+        };
+    }
 };
 
-// test "map + hash stress test" {
-//     const t = std.testing;
-//     const alloc = t.allocator;
-//
-//     const n: usize = 4;
-//
-//     var p = Poly.initEmpty(alloc, n, n, n);
-//
-//     var i: usize = 0;
-//     while (kkkkkkk
-//
-//     try t.expect(false);
-// }
+var STRESS_TEST: bool = true;
+var STRESS_COUNT: usize = 100; // 1000000;
+test "map + hash stress test" {
+    if (!STRESS_TEST) {
+        return error.SkipZigTest;
+    }
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var polys = HashSet.init(alloc);
+    defer polys.deinit();
+
+    const n: usize = 2;
+    var p = try Poly.initEmpty(alloc, n, n, n);
+    defer p.deinit();
+
+    var combination: usize = 0;
+    while (combination < STRESS_COUNT) : (combination += 1) {
+        // std.log.warn("combination {}", .{combination});
+        var bit: u4 = 0;
+        while (bit <= 7) : (bit += 1) {
+            var value = (combination & (@as(u8, 1) << @truncate(u3, bit))) > 0;
+            p.set.setValue(bit, value);
+            // std.log.warn("bit {}: {}", .{ bit, value });
+        }
+        var gop = try polys.getOrPut(p);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try p.clone(alloc);
+        }
+    }
+
+    std.log.warn("{} polys", .{polys.count()});
+}
 
 pub const MapContext = struct {
     const Self = @This();
     pub fn eql(self: Self, a: Poly, b: Poly) bool {
         _ = self;
-        if (a.a != b.a or a.b != b.b or a.c != b.c) {
-            return false;
-        }
-        return bitsets_eql(a.set, b.set);
+        return a.eql(b);
     }
     pub fn hash(self: Self, val: Poly) u64 {
         _ = self;
-        return hash_bitset(val.set.unmanaged);
+        return val.hash();
     }
 };
 const HashSet = std.HashMap(Poly, void, MapContext, std.hash_map.default_max_load_percentage);
@@ -112,6 +145,10 @@ test "map usage" {
     p3.set.set(0);
     try polys.put(p3, {});
     try t.expectEqual(polys.count(), 2);
+
+    p3.set.set(1);
+    try polys.put(p3, {});
+    try t.expectEqual(polys.count(), 3);
 }
 
 fn numMasks(bit_length: usize) usize {
@@ -122,13 +159,15 @@ const Wyhash = std.hash.Wyhash;
 fn hash_bitset(s: std.DynamicBitSetUnmanaged) u64 {
     var hasher = Wyhash.init(0);
 
-    hasher.update(std.mem.asBytes(&s.bit_length));
+    hash_bitset_into(s, &hasher);
 
+    return hasher.final();
+}
+fn hash_bitset_into(s: std.DynamicBitSetUnmanaged, hasher: *Wyhash) void {
+    hasher.update(std.mem.asBytes(&s.bit_length));
     for (s.masks[0..numMasks(s.bit_length)]) |*m| {
         hasher.update(std.mem.asBytes(m));
     }
-
-    return hasher.final();
 }
 
 test "hashing bitsets" {
